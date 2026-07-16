@@ -80,6 +80,97 @@ function computeCharOffsets(item) {
   return offsets;
 }
 
+// Оценка по весам символов (computeCharOffsets) — только приблизительная стартовая
+// точка. Дальше, когда страница уже отрисована в картинку, границу закрашивания
+// дополнительно подгоняем под настоящие пиксели текста — так результат не зависит
+// от того, насколько удачно угаданы веса символов для конкретного шрифта.
+function buildInkColumns(ctx, xFrom, xTo, yTop, yBottom) {
+  const x0 = Math.max(0, Math.floor(xFrom));
+  const x1 = Math.min(ctx.canvas.width, Math.ceil(xTo));
+  const y0 = Math.max(0, Math.floor(yTop));
+  const y1 = Math.min(ctx.canvas.height, Math.ceil(yBottom));
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (w <= 0 || h <= 0) return { x0, ink: [] };
+  const data = ctx.getImageData(x0, y0, w, h).data;
+  const ink = new Array(w).fill(false);
+  for (let col = 0; col < w; col++) {
+    for (let row = 0; row < h; row++) {
+      const p = (row * w + col) * 4;
+      const a = data[p + 3];
+      if (a > 10 && (data[p] + data[p + 1] + data[p + 2]) / 3 < 200) {
+        ink[col] = true;
+        break;
+      }
+    }
+  }
+  return { x0, ink };
+}
+
+// Проверяет, что count столбцов перед from (включительно, идя в сторону уменьшения
+// индекса) не содержат текста. Требуем устойчивый пробел в несколько столбцов, а не
+// один пустой пиксель — иначе внутренний просвет буквы ("о", "в") или двоеточия
+// (два пятна с промежутком) ошибочно принимается за границу между словами.
+function isClearRun(ink, from, count) {
+  for (let k = 0; k < count; k++) {
+    const idx = from - k;
+    if (idx < 0) continue;
+    if (ink[idx]) return false;
+  }
+  return true;
+}
+
+// Ищет ближайшую к estimatedX границу "устойчивый пробел -> текст" (начало символа)
+// в пределах maxSearchPx в обе стороны. Если ничего не нашлось — возвращает исходную
+// оценку без изменений.
+function snapToTextStart(ctx, estimatedX, yTop, yBottom, maxSearchPx, minGapPx) {
+  minGapPx = minGapPx || 3;
+  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxSearchPx, estimatedX + maxSearchPx, yTop, yBottom);
+  if (ink.length === 0) return estimatedX;
+  const estIdx = Math.round(estimatedX - x0);
+  let best = null;
+  let bestDist = Infinity;
+  for (let i = 1; i < ink.length; i++) {
+    if (ink[i] && isClearRun(ink, i - 1, minGapPx)) {
+      const dist = Math.abs(i - estIdx);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    }
+  }
+  return best === null ? estimatedX : x0 + best;
+}
+
+// Ищет ближайшую к estimatedX границу "текст -> устойчивый пробел" (конец символа).
+function snapToTextEnd(ctx, estimatedX, yTop, yBottom, maxSearchPx, minGapPx) {
+  minGapPx = minGapPx || 3;
+  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxSearchPx, estimatedX + maxSearchPx, yTop, yBottom);
+  if (ink.length === 0) return estimatedX;
+  const estIdx = Math.round(estimatedX - x0);
+  let best = null;
+  let bestDist = Infinity;
+  for (let i = 1; i < ink.length; i++) {
+    if (!ink[i] && ink[i - 1]) {
+      let clear = true;
+      for (let k = 0; k < minGapPx; k++) {
+        if (i + k < ink.length && ink[i + k]) {
+          clear = false;
+          break;
+        }
+      }
+      if (clear) {
+        const dist = Math.abs(i - estIdx);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      }
+    }
+  }
+  return best === null ? estimatedX : x0 + best;
+}
+
 function unionRect(a, b) {
   return {
     x0: Math.min(a.x0, b.x0),
@@ -218,12 +309,25 @@ async function redactPdf(file, activeTypes) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     ctx.fillStyle = "#000000";
+    const SNAP_SEARCH_PX = 22; // ~9pt при текущем масштабе рендера — окно поиска настоящей границы текста
     for (const rect of redactionRects) {
       const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
-      const x = Math.min(vp[0], vp[2]);
+      let x = Math.min(vp[0], vp[2]);
+      let xEnd = Math.max(vp[0], vp[2]);
       const y = Math.min(vp[1], vp[3]);
-      const w = Math.abs(vp[2] - vp[0]);
       const h = Math.abs(vp[3] - vp[1]);
+      // Сужаем окно выборки по высоте, чтобы не задеть соседние строки сверху/снизу.
+      const yTop = y + h * 0.15;
+      const yBottom = y + h * 0.85;
+
+      const snappedX = snapToTextStart(ctx, x, yTop, yBottom, SNAP_SEARCH_PX);
+      const snappedXEnd = snapToTextEnd(ctx, xEnd, yTop, yBottom, SNAP_SEARCH_PX);
+      if (snappedXEnd > snappedX) {
+        x = snappedX;
+        xEnd = snappedXEnd;
+      }
+
+      const w = xEnd - x;
       ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
     }
 
