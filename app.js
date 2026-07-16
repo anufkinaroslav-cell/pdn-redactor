@@ -5,7 +5,7 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
 
 const RENDER_SCALE = 2.5;
-const BOX_PADDING_PX = 2;
+const BOX_PADDING_PX = 3;
 
 const fileInput = document.getElementById("fileInput");
 const processBtn = document.getElementById("processBtn");
@@ -41,14 +41,43 @@ function itemRect(item) {
   };
 }
 
-// Средняя ширина одного символа внутри текстового блока pdf.js. PDF-генераторы часто
-// отдают целую строку или даже абзац одним блоком (item) — если закрашивать весь
-// item целиком при любом совпадении внутри него, лишний текст вокруг найденных данных
-// тоже пропадает. Поэтому для найденных символов считаем их приблизительное положение
-// внутри блока (ширина блока, поделённая на число символов) и закрашиваем только его.
-function itemCharWidth(item) {
+// pdf.js не даёт ширину каждого отдельного символа — только суммарную ширину всего
+// текстового блока. Первая версия делила эту ширину поровну на все символы, но
+// реальные буквы и цифры разной ширины (например, заглавная "Ш" ощутимо шире цифры
+// "1"), поэтому граница закрашивания то не доходила до конца данных, то заезжала на
+// предыдущее слово. Ниже — грубые весовые коэффициенты по типу символа: цифры уже
+// среднего, заглавные буквы шире, пробелы/пунктуация уже всего. Веса нормируются так,
+// чтобы их сумма точно равнялась реальной ширине блока — это не настоящие метрики
+// шрифта, но гораздо ближе к реальности, чем равномерное деление.
+function charWeight(ch) {
+  if (/[0-9]/.test(ch)) return 0.58;
+  if (/[A-ZА-ЯЁ]/.test(ch)) return 1.15;
+  if (/[a-zа-яё]/.test(ch)) return 0.85;
+  return 0.5; // пробелы, пунктуация и всё остальное
+}
+
+// Возвращает массив длиной str.length+1: offsets[i] — расстояние от левого края
+// блока до левой границы символа с индексом i (offsets[0] = 0, offsets[len] = вся
+// ширина блока).
+function computeCharOffsets(item) {
   const w = item.width || 0;
-  return item.str.length > 0 ? w / item.str.length : 0;
+  const str = item.str;
+  const n = str.length;
+  const offsets = new Array(n + 1).fill(0);
+  if (n === 0) return offsets;
+  const weights = new Array(n);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    weights[i] = charWeight(str[i]);
+    total += weights[i];
+  }
+  const scale = total > 0 ? w / total : 0;
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    acc += weights[i] * scale;
+    offsets[i + 1] = acc;
+  }
+  return offsets;
 }
 
 function unionRect(a, b) {
@@ -68,7 +97,7 @@ function buildLines(items) {
   const visible = items.filter((it) => it.str.length > 0);
   visible.forEach((it) => {
     it._rect = itemRect(it);
-    it._charWidth = itemCharWidth(it);
+    it._charOffsets = computeCharOffsets(it);
   });
   const sorted = visible.slice().sort((a, b) => {
     const ay = (a._rect.y0 + a._rect.y1) / 2;
@@ -127,7 +156,7 @@ function buildLineString(lineItems) {
 }
 
 function collectRedactionRects(lineItems, activeTypes) {
-  // itemRect/itemCharWidth для каждого элемента уже вычислены в buildLines().
+  // itemRect/computeCharOffsets для каждого элемента уже вычислены в buildLines().
   const { str, charMap } = buildLineString(lineItems);
   const matches = window.PDN_DETECT_LINE(str);
   const rects = [];
@@ -151,10 +180,10 @@ function collectRedactionRects(lineItems, activeTypes) {
     let rect = null;
     for (const [idx, { min, max }] of perItem) {
       const item = lineItems[idx];
-      const charW = item._charWidth;
+      const offsets = item._charOffsets;
       const partial = {
-        x0: item._rect.x0 + charW * min,
-        x1: item._rect.x0 + charW * (max + 1),
+        x0: item._rect.x0 + offsets[min],
+        x1: item._rect.x0 + offsets[max + 1],
         y0: item._rect.y0,
         y1: item._rect.y1,
       };
