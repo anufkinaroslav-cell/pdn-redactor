@@ -107,68 +107,36 @@ function buildInkColumns(ctx, xFrom, xTo, yTop, yBottom) {
   return { x0, ink };
 }
 
-// Проверяет, что count столбцов перед from (включительно, идя в сторону уменьшения
-// индекса) не содержат текста. Требуем устойчивый пробел в несколько столбцов, а не
-// один пустой пиксель — иначе внутренний просвет буквы ("о", "в") или двоеточия
-// (два пятна с промежутком) ошибочно принимается за границу между словами.
-function isClearRun(ink, from, count) {
-  for (let k = 0; k < count; k++) {
-    const idx = from - k;
-    if (idx < 0) continue;
-    if (ink[idx]) return false;
-  }
-  return true;
+// ВАЖНО: подгонка границ умеет только РАСШИРЯТЬ область закрашивания, никогда не
+// сужать её относительно исходной оценки. Более ранняя версия искала ближайший
+// промежуток в обе стороны и могла принять обычный зазор МЕЖДУ соседними цифрами
+// одного и того же номера (внутри самих персональных данных) за границу слова —
+// из-за этого рамка могла "сжаться" и часть номера оставалась видна. Лучше слегка
+// задеть соседнее слово, чем показать хотя бы один символ персональных данных,
+// поэтому сдвиг возможен только наружу (шире), и только пока прямо на границе
+// действительно есть текст, который иначе будет обрезан.
+
+// Растягивает левую границу box'а влево, если ровно на границе ещё есть текст
+// (значит, оценка обрезает символ) — до ближайшего настоящего пробела или до
+// предела maxGrowPx. Никогда не сдвигает границу вправо.
+function growLeftToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx) {
+  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxGrowPx, estimatedX, yTop, yBottom);
+  if (ink.length === 0) return estimatedX;
+  let i = ink.length - 1;
+  if (!ink[i]) return estimatedX; // на границе уже пусто — расширять не нужно
+  while (i >= 0 && ink[i]) i--;
+  return x0 + Math.max(i, 0);
 }
 
-// Ищет ближайшую к estimatedX границу "устойчивый пробел -> текст" (начало символа)
-// в пределах maxSearchPx в обе стороны. Если ничего не нашлось — возвращает исходную
-// оценку без изменений.
-function snapToTextStart(ctx, estimatedX, yTop, yBottom, maxSearchPx, minGapPx) {
-  minGapPx = minGapPx || 3;
-  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxSearchPx, estimatedX + maxSearchPx, yTop, yBottom);
+// Растягивает правую границу box'а вправо, если ровно на границе ещё есть текст.
+// Никогда не сдвигает границу влево.
+function growRightToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx) {
+  const { x0, ink } = buildInkColumns(ctx, estimatedX, estimatedX + maxGrowPx, yTop, yBottom);
   if (ink.length === 0) return estimatedX;
-  const estIdx = Math.round(estimatedX - x0);
-  let best = null;
-  let bestDist = Infinity;
-  for (let i = 1; i < ink.length; i++) {
-    if (ink[i] && isClearRun(ink, i - 1, minGapPx)) {
-      const dist = Math.abs(i - estIdx);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = i;
-      }
-    }
-  }
-  return best === null ? estimatedX : x0 + best;
-}
-
-// Ищет ближайшую к estimatedX границу "текст -> устойчивый пробел" (конец символа).
-function snapToTextEnd(ctx, estimatedX, yTop, yBottom, maxSearchPx, minGapPx) {
-  minGapPx = minGapPx || 3;
-  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxSearchPx, estimatedX + maxSearchPx, yTop, yBottom);
-  if (ink.length === 0) return estimatedX;
-  const estIdx = Math.round(estimatedX - x0);
-  let best = null;
-  let bestDist = Infinity;
-  for (let i = 1; i < ink.length; i++) {
-    if (!ink[i] && ink[i - 1]) {
-      let clear = true;
-      for (let k = 0; k < minGapPx; k++) {
-        if (i + k < ink.length && ink[i + k]) {
-          clear = false;
-          break;
-        }
-      }
-      if (clear) {
-        const dist = Math.abs(i - estIdx);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = i;
-        }
-      }
-    }
-  }
-  return best === null ? estimatedX : x0 + best;
+  if (!ink[0]) return estimatedX; // на границе уже пусто — расширять не нужно
+  let i = 0;
+  while (i < ink.length && ink[i]) i++;
+  return x0 + Math.min(i, ink.length - 1);
 }
 
 function unionRect(a, b) {
@@ -309,7 +277,7 @@ async function redactPdf(file, activeTypes) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     ctx.fillStyle = "#000000";
-    const SNAP_SEARCH_PX = 22; // ~9pt при текущем масштабе рендера — окно поиска настоящей границы текста
+    const GROW_MAX_PX = 14; // ~5.6pt при текущем масштабе рендера — предел расширения границы
     for (const rect of redactionRects) {
       const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
       let x = Math.min(vp[0], vp[2]);
@@ -320,12 +288,8 @@ async function redactPdf(file, activeTypes) {
       const yTop = y + h * 0.15;
       const yBottom = y + h * 0.85;
 
-      const snappedX = snapToTextStart(ctx, x, yTop, yBottom, SNAP_SEARCH_PX);
-      const snappedXEnd = snapToTextEnd(ctx, xEnd, yTop, yBottom, SNAP_SEARCH_PX);
-      if (snappedXEnd > snappedX) {
-        x = snappedX;
-        xEnd = snappedXEnd;
-      }
+      x = growLeftToCoverInk(ctx, x, yTop, yBottom, GROW_MAX_PX);
+      xEnd = growRightToCoverInk(ctx, xEnd, yTop, yBottom, GROW_MAX_PX);
 
       const w = xEnd - x;
       ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
