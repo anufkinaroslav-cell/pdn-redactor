@@ -41,6 +41,16 @@ function itemRect(item) {
   };
 }
 
+// Средняя ширина одного символа внутри текстового блока pdf.js. PDF-генераторы часто
+// отдают целую строку или даже абзац одним блоком (item) — если закрашивать весь
+// item целиком при любом совпадении внутри него, лишний текст вокруг найденных данных
+// тоже пропадает. Поэтому для найденных символов считаем их приблизительное положение
+// внутри блока (ширина блока, поделённая на число символов) и закрашиваем только его.
+function itemCharWidth(item) {
+  const w = item.width || 0;
+  return item.str.length > 0 ? w / item.str.length : 0;
+}
+
 function unionRect(a, b) {
   return {
     x0: Math.min(a.x0, b.x0),
@@ -58,6 +68,7 @@ function buildLines(items) {
   const visible = items.filter((it) => it.str.length > 0);
   visible.forEach((it) => {
     it._rect = itemRect(it);
+    it._charWidth = itemCharWidth(it);
   });
   const sorted = visible.slice().sort((a, b) => {
     const ay = (a._rect.y0 + a._rect.y1) / 2;
@@ -92,7 +103,10 @@ function buildLines(items) {
 
 function buildLineString(lineItems) {
   let str = "";
-  const charItemMap = [];
+  // Для каждого символа строки запоминаем, из какого item он взят и какой у него
+  // порядковый номер ВНУТРИ этого item (null — вставленный пробел между items,
+  // не принадлежит никакому item).
+  const charMap = [];
   lineItems.forEach((it, idx) => {
     const rect = it._rect;
     if (idx > 0) {
@@ -101,33 +115,50 @@ function buildLineString(lineItems) {
       const prevHeight = prev._rect.y1 - prev._rect.y0;
       if (gap > prevHeight * 0.15) {
         str += " ";
-        charItemMap.push(-1);
+        charMap.push(null);
       }
     }
-    for (const ch of it.str) {
-      str += ch;
-      charItemMap.push(idx);
+    for (let i = 0; i < it.str.length; i++) {
+      str += it.str[i];
+      charMap.push({ idx, local: i });
     }
   });
-  return { str, charItemMap };
+  return { str, charMap };
 }
 
 function collectRedactionRects(lineItems, activeTypes) {
-  // itemRect для каждого элемента уже вычислен в buildLines().
-  const { str, charItemMap } = buildLineString(lineItems);
+  // itemRect/itemCharWidth для каждого элемента уже вычислены в buildLines().
+  const { str, charMap } = buildLineString(lineItems);
   const matches = window.PDN_DETECT_LINE(str);
   const rects = [];
   for (const match of matches) {
     if (!activeTypes.has(match.type)) continue;
-    const itemIdxs = new Set();
+    // Для каждого затронутого item находим МИНИМАЛЬНЫЙ и МАКСИМАЛЬНЫЙ локальный
+    // индекс символа, попавшего в совпадение, и закрашиваем только этот диапазон
+    // внутри item, а не весь item целиком.
+    const perItem = new Map();
     for (let c = match.start; c < match.end; c++) {
-      const idx = charItemMap[c];
-      if (idx !== -1 && idx !== undefined) itemIdxs.add(idx);
+      const cm = charMap[c];
+      if (!cm) continue;
+      const cur = perItem.get(cm.idx);
+      if (!cur) perItem.set(cm.idx, { min: cm.local, max: cm.local });
+      else {
+        if (cm.local < cur.min) cur.min = cm.local;
+        if (cm.local > cur.max) cur.max = cm.local;
+      }
     }
-    if (itemIdxs.size === 0) continue;
+    if (perItem.size === 0) continue;
     let rect = null;
-    for (const idx of itemIdxs) {
-      rect = rect ? unionRect(rect, lineItems[idx]._rect) : lineItems[idx]._rect;
+    for (const [idx, { min, max }] of perItem) {
+      const item = lineItems[idx];
+      const charW = item._charWidth;
+      const partial = {
+        x0: item._rect.x0 + charW * min,
+        x1: item._rect.x0 + charW * (max + 1),
+        y0: item._rect.y0,
+        y1: item._rect.y1,
+      };
+      rect = rect ? unionRect(rect, partial) : partial;
     }
     rects.push(rect);
   }
