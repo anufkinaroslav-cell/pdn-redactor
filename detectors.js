@@ -36,10 +36,61 @@
   ];
 
   function findAddressLine(str) {
+    // Проверяем только явные ключевые слова адреса — отдельный 6-значный индекс
+    // раньше тоже считался признаком адреса, но так под удар попадал любой
+    // случайный 6-значный номер в документе (например, часть номера паспорта).
     const lower = str.toLowerCase();
-    const hasKeyword = ADDRESS_KEYWORDS.some((k) => lower.includes(k)) || /\b\d{6}\b/.test(str);
+    const hasKeyword = ADDRESS_KEYWORDS.some((k) => lower.includes(k));
     if (!hasKeyword) return [];
     return [{ start: 0, end: str.length, type: "адрес" }];
+  }
+
+  // Если в строке явно написано "ИНН:", "СНИЛС", "паспорт", "телефон" — редактируем
+  // весь идущий следом ряд цифр, каким бы ни было его точное количество. Это подстраховка
+  // на случай опечаток/нестандартного формата, когда точные регексы ниже промахиваются
+  // (например, ИНН из 13 цифр вместо 10/12 всё равно должен быть скрыт, раз он так подписан).
+  const LABELS = [
+    { re: /инн/i, type: "ИНН" },
+    { re: /снилс/i, type: "СНИЛС" },
+    { re: /паспорт|серия\s*(?:№|номер)?/i, type: "паспорт" },
+    { re: /телефон|тел\.|моб\./i, type: "телефон" },
+  ];
+
+  function findLabeledDigitRuns(str, ranges) {
+    for (const { re, type } of LABELS) {
+      const labelMatch = re.exec(str);
+      if (!labelMatch) continue;
+      const searchFrom = labelMatch.index + labelMatch[0].length;
+      const windowStr = str.slice(searchFrom, Math.min(str.length, searchFrom + 40));
+      const digitRun = /\d[\d \-]{2,}\d|\d{3,}/.exec(windowStr);
+      if (!digitRun) continue;
+      const start = searchFrom + digitRun.index;
+      const end = start + digitRun[0].length;
+      if (!overlaps(ranges, start, end)) ranges.push({ start, end, type });
+    }
+  }
+
+  // Частые заглавные слова в начале предложения, которые не являются именами
+  // (местоимения, глаголы) — исключаем их из найденных последовательностей ФИО,
+  // чтобы не закрашивать соседние слова вместе с настоящим именем.
+  const NAME_STOPWORDS = new Set([
+    "я", "он", "она", "они", "мы", "вы", "ты", "это", "настоящим",
+    "должен", "должна", "должны", "прошу", "сообщаю", "довожу", "уведомляю",
+    "заявляю", "подтверждаю", "прошу", "настоящий", "данный", "данная",
+  ]);
+
+  function isKnownFirstName(word) {
+    const w = word.toLowerCase();
+    if (FIRST_NAMES.has(w)) return true;
+    // Учитываем падежные окончания русских имён (Валерий -> Валерию/Валерия/Валерием):
+    // сравниваем по "стеблю" имени без последних 1-2 букв.
+    for (const name of FIRST_NAMES) {
+      const stem = name.length > 4 ? name.slice(0, -2) : name.slice(0, -1);
+      if (stem.length >= 3 && w.startsWith(stem) && Math.abs(w.length - name.length) <= 2) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function findFio(str, ranges) {
@@ -50,13 +101,31 @@
     const wordSeq = /(?:[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+){1,2}[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?/g;
     let m;
     while ((m = wordSeq.exec(str)) !== null) {
-      const start = m.index;
-      const end = start + m[0].length;
-      if (overlaps(ranges, start, end)) continue;
+      let start = m.index;
+      let end = start + m[0].length;
       const words = m[0].split(/\s+/);
-      const lastWord = words[words.length - 1].toLowerCase();
+
+      // Обрезаем стоп-слова с краёв (например, "Должен" перед именем).
+      let from = 0;
+      let to = words.length;
+      while (from < to && NAME_STOPWORDS.has(words[from].toLowerCase())) from++;
+      while (to > from && NAME_STOPWORDS.has(words[to - 1].toLowerCase())) to--;
+      if (to - from < 1) continue;
+      const trimmedWords = words.slice(from, to);
+
+      if (from > 0 || to < words.length) {
+        // Пересчитываем диапазон под обрезанные слова.
+        const before = words.slice(0, from).join(" ");
+        const offsetStart = start + (before.length > 0 ? before.length + 1 : 0);
+        const kept = trimmedWords.join(" ");
+        start = offsetStart;
+        end = offsetStart + kept.length;
+      }
+
+      if (overlaps(ranges, start, end)) continue;
+      const lastWord = trimmedWords[trimmedWords.length - 1].toLowerCase();
       const hasPatronymic = PATRONYMIC_SUFFIXES.some((suf) => lastWord.endsWith(suf));
-      const hasKnownFirstName = words.some((w) => FIRST_NAMES.has(w.toLowerCase()));
+      const hasKnownFirstName = trimmedWords.some((w) => isKnownFirstName(w));
       if (hasPatronymic || hasKnownFirstName) {
         ranges.push({ start, end, type: "ФИО" });
       }
@@ -65,6 +134,10 @@
 
   function detectLine(str) {
     const ranges = [];
+
+    // Подписанные поля (ИНН:, СНИЛС, паспорт, телефон) — в первую очередь, чтобы
+    // не зависеть от точного количества цифр в строгих регексах ниже.
+    findLabeledDigitRuns(str, ranges);
 
     // СНИЛС: 11 цифр в формате XXX-XXX-XXX XX (с пробелами/дефисами опционально)
     addMatches(ranges, /\b\d{3}[- ]?\d{3}[- ]?\d{3}[ ]?\d{2}\b/, str, "СНИЛС");

@@ -51,16 +51,42 @@ function unionRect(a, b) {
 }
 
 function buildLines(items) {
+  // Группируем по Y-координате базовой линии, а не по item.hasEOL — этот флаг
+  // pdf.js расставляет ненадёжно в зависимости от того, чем создан PDF, и может
+  // склеить две визуально разные строки в одну, из-за чего чёрный блок захватывал
+  // сразу несколько строк текста.
+  const visible = items.filter((it) => it.str.length > 0);
+  visible.forEach((it) => {
+    it._rect = itemRect(it);
+  });
+  const sorted = visible.slice().sort((a, b) => {
+    const ay = (a._rect.y0 + a._rect.y1) / 2;
+    const by = (b._rect.y0 + b._rect.y1) / 2;
+    return by - ay; // сверху вниз страницы
+  });
+
   const lines = [];
   let current = [];
-  for (const it of items) {
-    if (it.str.length > 0) current.push(it);
-    if (it.hasEOL) {
-      if (current.length) lines.push(current);
-      current = [];
+  let currentY = null;
+  const Y_TOL_RATIO = 0.4;
+  for (const it of sorted) {
+    const y = (it._rect.y0 + it._rect.y1) / 2;
+    const h = it._rect.y1 - it._rect.y0;
+    const tol = Math.max(h, 4) * Y_TOL_RATIO;
+    if (currentY === null || Math.abs(y - currentY) <= tol) {
+      current.push(it);
+      if (currentY === null) currentY = y;
+    } else {
+      current.sort((a, b) => a._rect.x0 - b._rect.x0);
+      lines.push(current);
+      current = [it];
+      currentY = y;
     }
   }
-  if (current.length) lines.push(current);
+  if (current.length) {
+    current.sort((a, b) => a._rect.x0 - b._rect.x0);
+    lines.push(current);
+  }
   return lines;
 }
 
@@ -87,9 +113,7 @@ function buildLineString(lineItems) {
 }
 
 function collectRedactionRects(lineItems, activeTypes) {
-  lineItems.forEach((it) => {
-    it._rect = itemRect(it);
-  });
+  // itemRect для каждого элемента уже вычислен в buildLines().
   const { str, charItemMap } = buildLineString(lineItems);
   const matches = window.PDN_DETECT_LINE(str);
   const rects = [];
