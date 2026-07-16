@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>Редактор персональных данных в PDF</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Удаление персональных данных из PDF</h1>
+    <p class="subtitle">
+      Обработка полностью локальная: файлы не покидают эту вкладку браузера и никуда не отправляются по сети.
+      Найденные данные необратимо закрашиваются и физически удаляются из итогового файла (страницы становятся изображениями).
+    </p>
+
+    <div class="panel">
+      <label class="file-label" for="fileInput">Выберите PDF-файлы</label>
+      <input type="file" id="fileInput" accept="application/pdf" multiple />
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Что скрывать</div>
+      <div class="types">
+        <label><input type="checkbox" class="type-check" value="ФИО" checked /> ФИО</label>
+        <label><input type="checkbox" class="type-check" value="ИНН" checked /> ИНН</label>
+        <label><input type="checkbox" class="type-check" value="СНИЛС" checked /> СНИЛС</label>
+        <label><input type="checkbox" class="type-check" value="паспорт" checked /> Паспорт</label>
+        <label><input type="checkbox" class="type-check" value="телефон" checked /> Телефон</label>
+        <label><input type="checkbox" class="type-check" value="адрес" checked /> Адрес</label>
+      </div>
+    </div>
+
+    <button id="processBtn">Обработать</button>
+
+    <div class="panel">
+      <div class="panel-title">Лог</div>
+      <div id="log" class="log"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Результаты</div>
+      <div id="results" class="results"></div>
+    </div>
+
+    <p class="footnote">
+      Ограничение: работает с текстовыми PDF (где текст выделяется). Распознавание ФИО и адресов —
+      эвристическое (без ИИ/NER), возможны отдельные пропуски или лишние срабатывания — для критичных
+      документов рекомендуется выборочно проверять результат.
+    </p>
+  </div>
+
+  <script src="vendor/pdf.min.js"></script>
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="names-dict.js"></script>
+  <script src="detectors.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
