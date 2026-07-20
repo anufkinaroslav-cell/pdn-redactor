@@ -115,27 +115,61 @@ function buildInkColumns(ctx, xFrom, xTo, yTop, yBottom) {
 // задеть соседнее слово, чем показать хотя бы один символ персональных данных,
 // поэтому сдвиг возможен только наружу (шире), и только пока прямо на границе
 // действительно есть текст, который иначе будет обрезан.
+//
+// При расширении важно останавливаться только на УСТОЙЧИВОМ пробеле (несколько
+// пустых столбцов подряд), а не на первом же пустом пикселе — иначе обычный
+// межбуквенный зазор внутри соседнего слова ошибочно принимается за его конец, и
+// наружу "утекает" только часть соседнего слова вместо того, чтобы либо не
+// трогать его вовсе, либо (если оценка совсем плоха) прихватить слово целиком —
+// оба этих исхода лучше, чем "обрубок" где-то на середине слова.
+//
+// Пиксельная сегментация на "слова" (по разрывам между чернилами) в этом
+// приложении сознательно НЕ используется для точного позиционирования: в цифрах
+// (суммы, номера) разрыв между соседними цифрами внутри ОДНОГО числа зачастую
+// такой же ширины, как разрыв между СОСЕДНИМИ словами — надёжно отличить одно от
+// другого по одной лишь ширине зазора не получается, и попытка это сделать в ходе
+// разработки давала неожиданные сбои (то слипание соседних слов, то расползание
+// на постороннее слово). Простое и безопасное расширение "наружу от оценки" —
+// осознанный компромисс: он может иногда на пиксель-два задеть край соседнего
+// слова, но никогда не оставляет часть персональных данных видимой.
+function isClearRun(ink, from, count) {
+  for (let k = 0; k < count; k++) {
+    const idx = from - k;
+    if (idx < 0) continue;
+    if (ink[idx]) return false;
+  }
+  return true;
+}
 
-// Растягивает левую границу box'а влево, если ровно на границе ещё есть текст
-// (значит, оценка обрезает символ) — до ближайшего настоящего пробела или до
-// предела maxGrowPx. Никогда не сдвигает границу вправо.
-function growLeftToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx) {
+function growLeftToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx) {
+  minGapPx = minGapPx || 3;
   const { x0, ink } = buildInkColumns(ctx, estimatedX - maxGrowPx, estimatedX, yTop, yBottom);
   if (ink.length === 0) return estimatedX;
   let i = ink.length - 1;
   if (!ink[i]) return estimatedX; // на границе уже пусто — расширять не нужно
-  while (i >= 0 && ink[i]) i--;
+  while (i >= 0 && !(!ink[i] && isClearRun(ink, i, minGapPx))) i--;
   return x0 + Math.max(i, 0);
 }
 
-// Растягивает правую границу box'а вправо, если ровно на границе ещё есть текст.
-// Никогда не сдвигает границу влево.
-function growRightToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx) {
+function growRightToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx) {
+  minGapPx = minGapPx || 3;
   const { x0, ink } = buildInkColumns(ctx, estimatedX, estimatedX + maxGrowPx, yTop, yBottom);
   if (ink.length === 0) return estimatedX;
   if (!ink[0]) return estimatedX; // на границе уже пусто — расширять не нужно
   let i = 0;
-  while (i < ink.length && ink[i]) i++;
+  while (i < ink.length) {
+    if (!ink[i]) {
+      let clear = true;
+      for (let k = 0; k < minGapPx; k++) {
+        if (i + k < ink.length && ink[i + k]) {
+          clear = false;
+          break;
+        }
+      }
+      if (clear) break;
+    }
+    i++;
+  }
   return x0 + Math.min(i, ink.length - 1);
 }
 
@@ -277,7 +311,7 @@ async function redactPdf(file, activeTypes) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     ctx.fillStyle = "#000000";
-    const GROW_MAX_PX = 14; // ~5.6pt при текущем масштабе рендера — предел расширения границы
+    const GROW_MAX_PX = 22; // ~8.8pt при текущем масштабе рендера — предел расширения границы
     for (const rect of redactionRects) {
       const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
       let x = Math.min(vp[0], vp[2]);
