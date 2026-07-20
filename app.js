@@ -5,7 +5,7 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
 
 const RENDER_SCALE = 2.5;
-const BOX_PADDING_PX = 3;
+const BOX_PADDING_PX = 2;
 
 const fileInput = document.getElementById("fileInput");
 const processBtn = document.getElementById("processBtn");
@@ -41,154 +41,14 @@ function itemRect(item) {
   };
 }
 
-// pdf.js не даёт ширину каждого отдельного символа — только суммарную ширину всего
-// текстового блока. Первая версия делила эту ширину поровну на все символы, но
-// реальные буквы и цифры разной ширины (например, заглавная "Ш" ощутимо шире цифры
-// "1"), поэтому граница закрашивания то не доходила до конца данных, то заезжала на
-// предыдущее слово. Ниже — грубые весовые коэффициенты по типу символа: цифры уже
-// среднего, заглавные буквы шире, пробелы/пунктуация уже всего. Веса нормируются так,
-// чтобы их сумма точно равнялась реальной ширине блока — это не настоящие метрики
-// шрифта, но гораздо ближе к реальности, чем равномерное деление.
-function charWeight(ch) {
-  if (/[0-9]/.test(ch)) return 0.58;
-  if (/[A-ZА-ЯЁ]/.test(ch)) return 1.15;
-  if (/[a-zа-яё]/.test(ch)) return 0.85;
-  return 0.5; // пробелы, пунктуация и всё остальное
-}
-
-// Возвращает массив длиной str.length+1: offsets[i] — расстояние от левого края
-// блока до левой границы символа с индексом i (offsets[0] = 0, offsets[len] = вся
-// ширина блока).
-function computeCharOffsets(item) {
+// Средняя ширина одного символа внутри текстового блока pdf.js. PDF-генераторы часто
+// отдают целую строку или даже абзац одним блоком (item) — если закрашивать весь
+// item целиком при любом совпадении внутри него, лишний текст вокруг найденных данных
+// тоже пропадает. Поэтому для найденных символов считаем их приблизительное положение
+// внутри блока (ширина блока, поделённая на число символов) и закрашиваем только его.
+function itemCharWidth(item) {
   const w = item.width || 0;
-  const str = item.str;
-  const n = str.length;
-  const offsets = new Array(n + 1).fill(0);
-  if (n === 0) return offsets;
-  const weights = new Array(n);
-  let total = 0;
-  for (let i = 0; i < n; i++) {
-    weights[i] = charWeight(str[i]);
-    total += weights[i];
-  }
-  const scale = total > 0 ? w / total : 0;
-  let acc = 0;
-  for (let i = 0; i < n; i++) {
-    acc += weights[i] * scale;
-    offsets[i + 1] = acc;
-  }
-  return offsets;
-}
-
-// Оценка по весам символов (computeCharOffsets) — только приблизительная стартовая
-// точка. Дальше, когда страница уже отрисована в картинку, границу закрашивания
-// дополнительно подгоняем под настоящие пиксели текста — так результат не зависит
-// от того, насколько удачно угаданы веса символов для конкретного шрифта.
-function buildInkColumns(ctx, xFrom, xTo, yTop, yBottom) {
-  const x0 = Math.max(0, Math.floor(xFrom));
-  const x1 = Math.min(ctx.canvas.width, Math.ceil(xTo));
-  const y0 = Math.max(0, Math.floor(yTop));
-  const y1 = Math.min(ctx.canvas.height, Math.ceil(yBottom));
-  const w = x1 - x0;
-  const h = y1 - y0;
-  if (w <= 0 || h <= 0) return { x0, ink: [] };
-  const data = ctx.getImageData(x0, y0, w, h).data;
-  const ink = new Array(w).fill(false);
-  for (let col = 0; col < w; col++) {
-    for (let row = 0; row < h; row++) {
-      const p = (row * w + col) * 4;
-      const a = data[p + 3];
-      if (a > 10 && (data[p] + data[p + 1] + data[p + 2]) / 3 < 200) {
-        ink[col] = true;
-        break;
-      }
-    }
-  }
-  return { x0, ink };
-}
-
-// ВАЖНО: подгонка границ умеет только РАСШИРЯТЬ область закрашивания, никогда не
-// сужать её относительно исходной оценки. Более ранняя версия искала ближайший
-// промежуток в обе стороны и могла принять обычный зазор МЕЖДУ соседними цифрами
-// одного и того же номера (внутри самих персональных данных) за границу слова —
-// из-за этого рамка могла "сжаться" и часть номера оставалась видна. Лучше слегка
-// задеть соседнее слово, чем показать хотя бы один символ персональных данных,
-// поэтому сдвиг возможен только наружу (шире), и только пока прямо на границе
-// действительно есть текст, который иначе будет обрезан.
-//
-// При расширении важно останавливаться только на УСТОЙЧИВОМ пробеле (несколько
-// пустых столбцов подряд), а не на первом же пустом пикселе — иначе обычный
-// межбуквенный зазор внутри соседнего слова ошибочно принимается за его конец, и
-// наружу "утекает" только часть соседнего слова вместо того, чтобы либо не
-// трогать его вовсе, либо (если оценка совсем плоха) прихватить слово целиком —
-// оба этих исхода лучше, чем "обрубок" где-то на середине слова.
-//
-// Пиксельная сегментация на "слова" (по разрывам между чернилами) в этом
-// приложении сознательно НЕ используется для точного позиционирования: в цифрах
-// (суммы, номера) разрыв между соседними цифрами внутри ОДНОГО числа зачастую
-// такой же ширины, как разрыв между СОСЕДНИМИ словами — надёжно отличить одно от
-// другого по одной лишь ширине зазора не получается, и попытка это сделать в ходе
-// разработки давала неожиданные сбои (то слипание соседних слов, то расползание
-// на постороннее слово). Простое и безопасное расширение "наружу от оценки" —
-// осознанный компромисс: он может иногда на пиксель-два задеть край соседнего
-// слова, но никогда не оставляет часть персональных данных видимой.
-function isClearRun(ink, from, count) {
-  for (let k = 0; k < count; k++) {
-    const idx = from - k;
-    if (idx < 0) continue;
-    if (ink[idx]) return false;
-  }
-  return true;
-}
-
-// Если оценка серьёзно промахнулась мимо соседнего слова, важно не останавливаться
-// ПОСЕРЕДИНЕ него (получится некрасивый обрубок — половина слова закрашена,
-// половина нет): либо не трогаем слово вовсе (если сразу пусто), либо докрываем
-// его целиком, до первого настоящего устойчивого пробела, в пределах maxGrowPx.
-function growLeftToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx) {
-  minGapPx = minGapPx || 3;
-  const { x0, ink } = buildInkColumns(ctx, estimatedX - maxGrowPx, estimatedX, yTop, yBottom);
-  if (ink.length === 0) return estimatedX;
-  let i = ink.length - 1;
-  // На границе уже устойчиво пусто — расширять не нужно. Проверяем именно
-  // УСТОЙЧИВЫЙ пробел (isClearRun), а не единственный пиксель: оценка иногда по
-  // случайности попадает ровно в тонкий зазор МЕЖДУ двумя соседними буквами
-  // одного слова, и проверка только одного пикселя ошибочно решала "тут уже
-  // пусто", хотя на самом деле мы всё ещё в середине слова.
-  if (isClearRun(ink, i, minGapPx)) return estimatedX;
-  while (i >= 0 && !(!ink[i] && isClearRun(ink, i, minGapPx))) i--;
-  return x0 + Math.max(i, 0);
-}
-
-function growRightToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx) {
-  minGapPx = minGapPx || 3;
-  const { x0, ink } = buildInkColumns(ctx, estimatedX, estimatedX + maxGrowPx, yTop, yBottom);
-  if (ink.length === 0) return estimatedX;
-  {
-    let alreadyClear = true;
-    for (let k = 0; k < minGapPx; k++) {
-      if (ink[k]) {
-        alreadyClear = false;
-        break;
-      }
-    }
-    if (alreadyClear) return estimatedX; // на границе уже устойчиво пусто
-  }
-  let i = 0;
-  while (i < ink.length) {
-    if (!ink[i]) {
-      let clear = true;
-      for (let k = 0; k < minGapPx; k++) {
-        if (i + k < ink.length && ink[i + k]) {
-          clear = false;
-          break;
-        }
-      }
-      if (clear) break;
-    }
-    i++;
-  }
-  return x0 + Math.min(i, ink.length - 1);
+  return item.str.length > 0 ? w / item.str.length : 0;
 }
 
 function unionRect(a, b) {
@@ -208,7 +68,7 @@ function buildLines(items) {
   const visible = items.filter((it) => it.str.length > 0);
   visible.forEach((it) => {
     it._rect = itemRect(it);
-    it._charOffsets = computeCharOffsets(it);
+    it._charWidth = itemCharWidth(it);
   });
   const sorted = visible.slice().sort((a, b) => {
     const ay = (a._rect.y0 + a._rect.y1) / 2;
@@ -267,7 +127,7 @@ function buildLineString(lineItems) {
 }
 
 function collectRedactionRects(lineItems, activeTypes) {
-  // itemRect/computeCharOffsets для каждого элемента уже вычислены в buildLines().
+  // itemRect/itemCharWidth для каждого элемента уже вычислены в buildLines().
   const { str, charMap } = buildLineString(lineItems);
   const matches = window.PDN_DETECT_LINE(str);
   const rects = [];
@@ -291,10 +151,10 @@ function collectRedactionRects(lineItems, activeTypes) {
     let rect = null;
     for (const [idx, { min, max }] of perItem) {
       const item = lineItems[idx];
-      const offsets = item._charOffsets;
+      const charW = item._charWidth;
       const partial = {
-        x0: item._rect.x0 + offsets[min],
-        x1: item._rect.x0 + offsets[max + 1],
+        x0: item._rect.x0 + charW * min,
+        x1: item._rect.x0 + charW * (max + 1),
         y0: item._rect.y0,
         y1: item._rect.y1,
       };
@@ -329,26 +189,12 @@ async function redactPdf(file, activeTypes) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     ctx.fillStyle = "#000000";
-    // Обычная погрешность оценки — 15-20px на этом масштабе рендера, но если она
-    // всё же промахнётся сильнее, лучше докрыть соседнее слово целиком (до
-    // настоящего пробела после него), чем остановиться на полпути и оставить
-    // некрасивый обрубок — отсюда большой предел.
-    const GROW_MAX_PX = 150;
-    const MIN_GAP_PX = 4;
     for (const rect of redactionRects) {
       const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
-      let x = Math.min(vp[0], vp[2]);
-      let xEnd = Math.max(vp[0], vp[2]);
+      const x = Math.min(vp[0], vp[2]);
       const y = Math.min(vp[1], vp[3]);
+      const w = Math.abs(vp[2] - vp[0]);
       const h = Math.abs(vp[3] - vp[1]);
-      // Сужаем окно выборки по высоте, чтобы не задеть соседние строки сверху/снизу.
-      const yTop = y + h * 0.15;
-      const yBottom = y + h * 0.85;
-
-      x = growLeftToCoverInk(ctx, x, yTop, yBottom, GROW_MAX_PX, MIN_GAP_PX);
-      xEnd = growRightToCoverInk(ctx, xEnd, yTop, yBottom, GROW_MAX_PX, MIN_GAP_PX);
-
-      const w = xEnd - x;
       ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
     }
 
