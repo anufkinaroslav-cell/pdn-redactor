@@ -141,12 +141,21 @@ function isClearRun(ink, from, count) {
   return true;
 }
 
+// Если оценка серьёзно промахнулась мимо соседнего слова, важно не останавливаться
+// ПОСЕРЕДИНЕ него (получится некрасивый обрубок — половина слова закрашена,
+// половина нет): либо не трогаем слово вовсе (если сразу пусто), либо докрываем
+// его целиком, до первого настоящего устойчивого пробела, в пределах maxGrowPx.
 function growLeftToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx) {
   minGapPx = minGapPx || 3;
   const { x0, ink } = buildInkColumns(ctx, estimatedX - maxGrowPx, estimatedX, yTop, yBottom);
   if (ink.length === 0) return estimatedX;
   let i = ink.length - 1;
-  if (!ink[i]) return estimatedX; // на границе уже пусто — расширять не нужно
+  // На границе уже устойчиво пусто — расширять не нужно. Проверяем именно
+  // УСТОЙЧИВЫЙ пробел (isClearRun), а не единственный пиксель: оценка иногда по
+  // случайности попадает ровно в тонкий зазор МЕЖДУ двумя соседними буквами
+  // одного слова, и проверка только одного пикселя ошибочно решала "тут уже
+  // пусто", хотя на самом деле мы всё ещё в середине слова.
+  if (isClearRun(ink, i, minGapPx)) return estimatedX;
   while (i >= 0 && !(!ink[i] && isClearRun(ink, i, minGapPx))) i--;
   return x0 + Math.max(i, 0);
 }
@@ -155,7 +164,16 @@ function growRightToCoverInk(ctx, estimatedX, yTop, yBottom, maxGrowPx, minGapPx
   minGapPx = minGapPx || 3;
   const { x0, ink } = buildInkColumns(ctx, estimatedX, estimatedX + maxGrowPx, yTop, yBottom);
   if (ink.length === 0) return estimatedX;
-  if (!ink[0]) return estimatedX; // на границе уже пусто — расширять не нужно
+  {
+    let alreadyClear = true;
+    for (let k = 0; k < minGapPx; k++) {
+      if (ink[k]) {
+        alreadyClear = false;
+        break;
+      }
+    }
+    if (alreadyClear) return estimatedX; // на границе уже устойчиво пусто
+  }
   let i = 0;
   while (i < ink.length) {
     if (!ink[i]) {
@@ -311,7 +329,12 @@ async function redactPdf(file, activeTypes) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     ctx.fillStyle = "#000000";
-    const GROW_MAX_PX = 22; // ~8.8pt при текущем масштабе рендера — предел расширения границы
+    // Обычная погрешность оценки — 15-20px на этом масштабе рендера, но если она
+    // всё же промахнётся сильнее, лучше докрыть соседнее слово целиком (до
+    // настоящего пробела после него), чем остановиться на полпути и оставить
+    // некрасивый обрубок — отсюда большой предел.
+    const GROW_MAX_PX = 150;
+    const MIN_GAP_PX = 4;
     for (const rect of redactionRects) {
       const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
       let x = Math.min(vp[0], vp[2]);
@@ -322,8 +345,8 @@ async function redactPdf(file, activeTypes) {
       const yTop = y + h * 0.15;
       const yBottom = y + h * 0.85;
 
-      x = growLeftToCoverInk(ctx, x, yTop, yBottom, GROW_MAX_PX);
-      xEnd = growRightToCoverInk(ctx, xEnd, yTop, yBottom, GROW_MAX_PX);
+      x = growLeftToCoverInk(ctx, x, yTop, yBottom, GROW_MAX_PX, MIN_GAP_PX);
+      xEnd = growRightToCoverInk(ctx, xEnd, yTop, yBottom, GROW_MAX_PX, MIN_GAP_PX);
 
       const w = xEnd - x;
       ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
