@@ -206,18 +206,55 @@ function hasSelectableText(textContent) {
   return textContent.items.some((it) => it.str.trim().length > 0);
 }
 
-// Собирает плоский список строк с их словами из иерархического вывода Tesseract
-// (blocks -> paragraphs -> lines -> words), либо использует line.words напрямую,
-// если движок уже отдал их плоским списком.
-function extractOcrLines(data) {
-  if (Array.isArray(data.lines) && data.lines.length) return data.lines;
-  const lines = [];
+// Собирает ПЛОСКИЙ список всех распознанных слов, независимо от того, как
+// Tesseract сгруппировал их во внутренние blocks/paragraphs/lines.
+function extractAllOcrWords(data) {
+  if (Array.isArray(data.words) && data.words.length) return data.words;
+  const words = [];
   for (const block of data.blocks || []) {
     for (const para of block.paragraphs || []) {
       for (const line of para.lines || []) {
-        lines.push(line);
+        for (const w of line.words || []) words.push(w);
       }
     }
+  }
+  return words;
+}
+
+// Группируем слова OCR по Y-координате их bbox сами — так же, как buildLines()
+// для обычных PDF — а НЕ полагаемся на встроенную группировку в "строки" самого
+// Tesseract. Она иногда ошибочно объединяет две соседние визуальные строки в
+// одну (тогда чёрный блок захватывает вместе с личными данными ещё и соседний
+// нейтральный текст) или наоборот разбивает одну строку на части (тогда
+// совпадение, требующее слова из обеих частей, не находится вовсе).
+function groupOcrWordsIntoLines(words) {
+  const valid = words.filter((w) => (w.text || "").trim().length > 0 && w.bbox);
+  const withCenter = valid.map((w) => ({
+    w,
+    cy: (w.bbox.y0 + w.bbox.y1) / 2,
+    h: w.bbox.y1 - w.bbox.y0,
+  }));
+  withCenter.sort((a, b) => a.cy - b.cy);
+
+  const lines = [];
+  let current = [];
+  let currentY = null;
+  const Y_TOL_RATIO = 0.5;
+  for (const item of withCenter) {
+    const tol = Math.max(item.h, 4) * Y_TOL_RATIO;
+    if (currentY === null || Math.abs(item.cy - currentY) <= tol) {
+      current.push(item.w);
+      if (currentY === null) currentY = item.cy;
+    } else {
+      current.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      lines.push(current);
+      current = [item.w];
+      currentY = item.cy;
+    }
+  }
+  if (current.length) {
+    current.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+    lines.push(current);
   }
   return lines;
 }
@@ -269,8 +306,8 @@ function ocrPartialRect(word, min, max) {
 
 function collectOcrRedactionRects(data, activeTypes) {
   const rects = [];
-  for (const line of extractOcrLines(data)) {
-    const words = (line.words || []).filter((w) => (w.text || "").length > 0);
+  const lines = groupOcrWordsIntoLines(extractAllOcrWords(data));
+  for (const words of lines) {
     if (words.length === 0) continue;
     const { str, charMap } = buildOcrLineString(words);
     const matches = window.PDN_DETECT_LINE(str);
