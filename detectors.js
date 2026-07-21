@@ -49,24 +49,32 @@
   // весь идущий следом ряд цифр, каким бы ни было его точное количество. Это подстраховка
   // на случай опечаток/нестандартного формата, когда точные регексы ниже промахиваются
   // (например, ИНН из 13 цифр вместо 10/12 всё равно должен быть скрыт, раз он так подписан).
+  // Паспортные данные часто пишут как "серия 45 07 номер 123456" — серия и номер
+  // разделены словом "номер", так что это НЕ один непрерывный ряд цифр. Поэтому у
+  // паспорта несколько меток-триггеров (серия/номер/№ по отдельности), и КАЖДОЕ
+  // вхождение любой метки (а не только первое) ищет свой ряд цифр следом — иначе
+  // при формате "серия ... номер ..." находилась бы только "серия", а "номер"
+  // оставался бы не закрашенным.
   const LABELS = [
-    { re: /инн/i, type: "ИНН" },
-    { re: /снилс/i, type: "СНИЛС" },
-    { re: /паспорт|серия\s*(?:№|номер)?/i, type: "паспорт" },
-    { re: /телефон|тел\.|моб\./i, type: "телефон" },
+    { re: /инн/gi, type: "ИНН" },
+    { re: /снилс/gi, type: "СНИЛС" },
+    { re: /паспорт|серия|номер|№/gi, type: "паспорт" },
+    { re: /телефон|тел\.|моб\./gi, type: "телефон" },
   ];
 
   function findLabeledDigitRuns(str, ranges) {
     for (const { re, type } of LABELS) {
-      const labelMatch = re.exec(str);
-      if (!labelMatch) continue;
-      const searchFrom = labelMatch.index + labelMatch[0].length;
-      const windowStr = str.slice(searchFrom, Math.min(str.length, searchFrom + 40));
-      const digitRun = /\d[\d \-]{2,}\d|\d{3,}/.exec(windowStr);
-      if (!digitRun) continue;
-      const start = searchFrom + digitRun.index;
-      const end = start + digitRun[0].length;
-      if (!overlaps(ranges, start, end)) ranges.push({ start, end, type });
+      let labelMatch;
+      re.lastIndex = 0;
+      while ((labelMatch = re.exec(str)) !== null) {
+        const searchFrom = labelMatch.index + labelMatch[0].length;
+        const windowStr = str.slice(searchFrom, Math.min(str.length, searchFrom + 40));
+        const digitRun = /\d[\d \-]{2,}\d|\d{3,}/.exec(windowStr);
+        if (!digitRun) continue;
+        const start = searchFrom + digitRun.index;
+        const end = start + digitRun[0].length;
+        if (!overlaps(ranges, start, end)) ranges.push({ start, end, type });
+      }
     }
   }
 

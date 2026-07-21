@@ -165,6 +165,140 @@ function collectRedactionRects(lineItems, activeTypes) {
   return rects;
 }
 
+// ---- Распознавание сканов (OCR) ----
+//
+// Если у страницы нет текстового слоя вообще (отсканированный/сфотографированный
+// документ), pdf.js не находит ни одного символа — обычному пайплайну просто
+// нечего анализировать. В этом случае страницу распознаём через Tesseract.js
+// (работает целиком в браузере, языковая модель — локальный файл в vendor/,
+// ничего никуда не отправляется). OCR сам даёт координаты каждого слова на
+// картинке — они уже точные (реально измеренные), в отличие от оценки по весам
+// символов для обычных текстовых PDF.
+
+// Tesseract.js создаёт внутренний воркер через Blob-URL, а внутри такого воркера
+// относительные пути не разрешаются относительно адреса страницы — нужны
+// абсолютные URL, иначе importScripts падает с "invalid URL".
+function absoluteUrl(path) {
+  return new URL(path, window.location.href).href;
+}
+
+let ocrWorkerPromise = null;
+function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = Tesseract.createWorker("rus", 1, {
+      workerPath: absoluteUrl("vendor/tesseract/worker.min.js"),
+      corePath: absoluteUrl("vendor/tesseract/tesseract-core-simd-lstm.wasm.js"),
+      langPath: absoluteUrl("vendor/tesseract/lang-data"),
+    });
+  }
+  return ocrWorkerPromise;
+}
+
+async function terminateOcrWorker() {
+  if (ocrWorkerPromise) {
+    const worker = await ocrWorkerPromise;
+    ocrWorkerPromise = null;
+    await worker.terminate();
+  }
+}
+
+function hasSelectableText(textContent) {
+  return textContent.items.some((it) => it.str.trim().length > 0);
+}
+
+// Собирает плоский список строк с их словами из иерархического вывода Tesseract
+// (blocks -> paragraphs -> lines -> words), либо использует line.words напрямую,
+// если движок уже отдал их плоским списком.
+function extractOcrLines(data) {
+  if (Array.isArray(data.lines) && data.lines.length) return data.lines;
+  const lines = [];
+  for (const block of data.blocks || []) {
+    for (const para of block.paragraphs || []) {
+      for (const line of para.lines || []) {
+        lines.push(line);
+      }
+    }
+  }
+  return lines;
+}
+
+// Строит строку текста и карту "символ -> слово" для одной распознанной строки,
+// аналогично buildLineString() для обычных текстовых PDF, но на основе слов OCR.
+function buildOcrLineString(words) {
+  let str = "";
+  const charMap = [];
+  words.forEach((w, idx) => {
+    if (idx > 0) {
+      str += " ";
+      charMap.push(null);
+    }
+    const text = w.text || "";
+    for (let i = 0; i < text.length; i++) {
+      str += text[i];
+      charMap.push({ idx, local: i });
+    }
+  });
+  return { str, charMap };
+}
+
+function ocrWordRect(word) {
+  const b = word.bbox;
+  return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 };
+}
+
+// Прямоугольник для диапазона символов [min, max] внутри одного слова OCR. Если
+// затронуто слово целиком — используем его настоящий bbox без всякой оценки. Если
+// только часть (например, цифры внутри "ИНН:12345" без пробела) — используем
+// символьные bbox из OCR, если движок их вернул, а иначе равномерно делим bbox
+// слова по числу символов (тот же запасной приём, что и для обычных PDF).
+function ocrPartialRect(word, min, max) {
+  const text = word.text || "";
+  if (min === 0 && max === text.length - 1) return ocrWordRect(word);
+  if (Array.isArray(word.symbols) && word.symbols.length === text.length) {
+    let rect = null;
+    for (let i = min; i <= max; i++) {
+      const sRect = { x0: word.symbols[i].bbox.x0, y0: word.symbols[i].bbox.y0, x1: word.symbols[i].bbox.x1, y1: word.symbols[i].bbox.y1 };
+      rect = rect ? unionRect(rect, sRect) : sRect;
+    }
+    return rect;
+  }
+  const full = ocrWordRect(word);
+  const charW = text.length > 0 ? (full.x1 - full.x0) / text.length : 0;
+  return { x0: full.x0 + charW * min, x1: full.x0 + charW * (max + 1), y0: full.y0, y1: full.y1 };
+}
+
+function collectOcrRedactionRects(data, activeTypes) {
+  const rects = [];
+  for (const line of extractOcrLines(data)) {
+    const words = (line.words || []).filter((w) => (w.text || "").length > 0);
+    if (words.length === 0) continue;
+    const { str, charMap } = buildOcrLineString(words);
+    const matches = window.PDN_DETECT_LINE(str);
+    for (const match of matches) {
+      if (!activeTypes.has(match.type)) continue;
+      const perWord = new Map();
+      for (let c = match.start; c < match.end; c++) {
+        const cm = charMap[c];
+        if (!cm) continue;
+        const cur = perWord.get(cm.idx);
+        if (!cur) perWord.set(cm.idx, { min: cm.local, max: cm.local });
+        else {
+          if (cm.local < cur.min) cur.min = cm.local;
+          if (cm.local > cur.max) cur.max = cm.local;
+        }
+      }
+      if (perWord.size === 0) continue;
+      let rect = null;
+      for (const [idx, { min, max }] of perWord) {
+        const partial = ocrPartialRect(words[idx], min, max);
+        rect = rect ? unionRect(rect, partial) : partial;
+      }
+      rects.push(rect);
+    }
+  }
+  return rects;
+}
+
 async function redactPdf(file, activeTypes) {
   const buf = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data: buf });
@@ -174,12 +308,6 @@ async function redactPdf(file, activeTypes) {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
-    const lines = buildLines(textContent.items);
-
-    const redactionRects = [];
-    for (const lineItems of lines) {
-      redactionRects.push(...collectRedactionRects(lineItems, activeTypes));
-    }
 
     const viewport = page.getViewport({ scale: RENDER_SCALE });
     const canvas = document.createElement("canvas");
@@ -188,14 +316,38 @@ async function redactPdf(file, activeTypes) {
     const ctx = canvas.getContext("2d");
     await page.render({ canvasContext: ctx, viewport }).promise;
 
-    ctx.fillStyle = "#000000";
-    for (const rect of redactionRects) {
-      const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
-      const x = Math.min(vp[0], vp[2]);
-      const y = Math.min(vp[1], vp[3]);
-      const w = Math.abs(vp[2] - vp[0]);
-      const h = Math.abs(vp[3] - vp[1]);
-      ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
+    let redactionRects;
+    if (hasSelectableText(textContent)) {
+      const lines = buildLines(textContent.items);
+      redactionRects = [];
+      for (const lineItems of lines) {
+        redactionRects.push(...collectRedactionRects(lineItems, activeTypes));
+      }
+
+      ctx.fillStyle = "#000000";
+      for (const rect of redactionRects) {
+        const vp = viewport.convertToViewportRectangle([rect.x0, rect.y0, rect.x1, rect.y1]);
+        const x = Math.min(vp[0], vp[2]);
+        const y = Math.min(vp[1], vp[3]);
+        const w = Math.abs(vp[2] - vp[0]);
+        const h = Math.abs(vp[3] - vp[1]);
+        ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
+      }
+    } else {
+      // Текстового слоя нет вообще — похоже на скан/фото. Распознаём через OCR.
+      log(`  стр. ${pageNum}/${pdf.numPages}: текст не найден, похоже на скан — распознаю через OCR (это медленнее)...`);
+      const worker = await getOcrWorker();
+      const { data } = await worker.recognize(canvas, {}, { blocks: true });
+      redactionRects = collectOcrRedactionRects(data, activeTypes);
+
+      ctx.fillStyle = "#000000";
+      for (const rect of redactionRects) {
+        const x = Math.min(rect.x0, rect.x1);
+        const y = Math.min(rect.y0, rect.y1);
+        const w = Math.abs(rect.x1 - rect.x0);
+        const h = Math.abs(rect.y1 - rect.y0);
+        ctx.fillRect(x - BOX_PADDING_PX, y - BOX_PADDING_PX, w + BOX_PADDING_PX * 2, h + BOX_PADDING_PX * 2);
+      }
     }
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -249,5 +401,6 @@ processBtn.addEventListener("click", async () => {
     }
   }
 
+  await terminateOcrWorker();
   processBtn.disabled = false;
 });
