@@ -58,9 +58,145 @@ body {
   pointer-events: none;
 }
 
+.decor {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.decor-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(50px);
+  opacity: 0.55;
+  animation: decor-float 16s ease-in-out infinite;
+}
+
+@media (prefers-color-scheme: dark) {
+  .decor-blob { opacity: 0.3; }
+}
+
+.decor-blob-blue {
+  width: 280px; height: 280px;
+  top: -60px; left: -80px;
+  background: radial-gradient(circle, #5b8dff, transparent 70%);
+  animation-duration: 18s;
+}
+
+.decor-blob-pink {
+  width: 240px; height: 240px;
+  top: 8%; right: -100px;
+  background: radial-gradient(circle, #ff6fae, transparent 70%);
+  animation-duration: 14s;
+  animation-delay: -3s;
+}
+
+.decor-blob-teal {
+  width: 260px; height: 260px;
+  bottom: -80px; left: 6%;
+  background: radial-gradient(circle, #2dd4bf, transparent 70%);
+  animation-duration: 20s;
+  animation-delay: -8s;
+}
+
+.decor-blob-amber {
+  width: 200px; height: 200px;
+  bottom: 12%; right: 4%;
+  background: radial-gradient(circle, #ffb020, transparent 70%);
+  animation-duration: 15s;
+  animation-delay: -5s;
+}
+
+.decor-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 2.5px solid currentColor;
+  opacity: 0.35;
+  animation: decor-spin 34s linear infinite;
+}
+
+.decor-ring-1 {
+  width: 130px; height: 130px;
+  top: 18%; left: 4%;
+  color: #5b8dff;
+}
+
+.decor-ring-2 {
+  width: 90px; height: 90px;
+  bottom: 20%; right: 8%;
+  color: #ff6fae;
+  animation-duration: 26s;
+  animation-direction: reverse;
+}
+
+.decor-dot {
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0.55;
+  animation: decor-float 9s ease-in-out infinite;
+}
+
+.decor-dot-1 { width: 16px; height: 16px; top: 12%; left: 22%; background: #ffb020; animation-delay: -1s; }
+.decor-dot-2 { width: 10px; height: 10px; top: 30%; right: 14%; background: #5b8dff; animation-duration: 11s; }
+.decor-dot-3 { width: 14px; height: 14px; bottom: 30%; left: 10%; background: #2dd4bf; animation-delay: -4s; }
+.decor-dot-4 { width: 9px; height: 9px; bottom: 10%; right: 20%; background: #ff6fae; animation-duration: 13s; animation-delay: -2s; }
+.decor-dot-5 { width: 12px; height: 12px; top: 55%; left: 3%; background: #a78bfa; animation-duration: 10s; }
+
+.decor-shape {
+  position: absolute;
+  opacity: 0.4;
+  animation: decor-float 17s ease-in-out infinite;
+}
+
+.decor-triangle {
+  top: 42%; right: 3%;
+  width: 0; height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-bottom: 24px solid #a78bfa;
+  animation-duration: 19s;
+  animation-delay: -6s;
+}
+
+.decor-square {
+  bottom: 6%; left: 16%;
+  width: 18px; height: 18px;
+  background: #5b8dff;
+  border-radius: 5px;
+  transform: rotate(20deg);
+  animation-duration: 21s;
+  animation-delay: -9s;
+}
+
+@keyframes decor-float {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  50% { transform: translate(14px, -18px) rotate(8deg); }
+}
+
+@keyframes decor-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .decor-ring, .decor-shape, .decor-dot-2, .decor-dot-4, .decor-dot-5 {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .decor-blob, .decor-ring, .decor-dot, .decor-shape {
+    animation: none;
+  }
+}
+
 .container {
   max-width: 720px;
   margin: 0 auto;
+  position: relative;
+  z-index: 1;
 }
 
 .hero {
