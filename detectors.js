@@ -45,6 +45,51 @@
     return [{ start: 0, end: str.length, type: "адрес" }];
   }
 
+  // Ссылки на статьи закона ("ст. 125 УПК РФ", "статья 158 ч. 2 УК РФ" и т.п.) —
+  // это не персональные данные, их нужно оставлять видимыми даже если они попали
+  // на одну строку/абзац с реальными ПДн (например, из-за того, что OCR склеил
+  // несколько визуальных строк в одну, или сработала эвристика адреса, красящая
+  // строку целиком). Поэтому такие диапазоны сначала находятся отдельно, а затем
+  // в конце detectLine вырезаются из ЛЮБЫХ найденных диапазонов закраски — что бы
+  // их ни вызвало.
+  // \b здесь не подходит: JS считает кириллические буквы "не-словесными" для \b,
+  // поэтому граница между пробелом и русской буквой не определяется — вместо
+  // этого явно проверяем, что до/после матча нет ещё одной кириллической буквы
+  // (защита от срабатывания на "ст" внутри слова вроде "быстро"/"состав").
+  const CYR = "А-ЯЁа-яё";
+  const STATUTE_RE = new RegExp(
+    `(?<![${CYR}])[Сс][Тт](?:атья|атьи)?\\.?\\s*\\d+(?:\\.\\d+)?(?:\\s*,?\\s*ч(?:асть|асти)?\\.?\\s*\\d+)?\\s+[А-ЯЁ][а-яёА-ЯЁ]{1,7}(?:\\s+РФ)?(?![${CYR}])`,
+    "g"
+  );
+
+  function findStatuteRefs(str) {
+    const refs = [];
+    let m;
+    STATUTE_RE.lastIndex = 0;
+    while ((m = STATUTE_RE.exec(str)) !== null) {
+      refs.push({ start: m.index, end: m.index + m[0].length });
+    }
+    return refs;
+  }
+
+  function subtractProtected(ranges, protectedRanges) {
+    if (!protectedRanges.length) return ranges;
+    let pieces = ranges;
+    for (const p of protectedRanges) {
+      const next = [];
+      for (const piece of pieces) {
+        if (p.end <= piece.start || p.start >= piece.end) {
+          next.push(piece);
+          continue;
+        }
+        if (p.start > piece.start) next.push({ start: piece.start, end: Math.min(p.start, piece.end), type: piece.type });
+        if (p.end < piece.end) next.push({ start: Math.max(p.end, piece.start), end: piece.end, type: piece.type });
+      }
+      pieces = next;
+    }
+    return pieces.filter((r) => r.end > r.start);
+  }
+
   // Если в строке явно написано "ИНН:", "СНИЛС", "паспорт", "телефон" — редактируем
   // весь идущий следом ряд цифр, каким бы ни было его точное количество. Это подстраховка
   // на случай опечаток/нестандартного формата, когда точные регексы ниже промахиваются
@@ -175,6 +220,7 @@
 
   function detectLine(str) {
     const ranges = [];
+    const protectedRanges = findStatuteRefs(str);
 
     // Подписанные поля (ИНН:, СНИЛС, паспорт, телефон) — в первую очередь, чтобы
     // не зависеть от точного количества цифр в строгих регексах ниже.
@@ -205,8 +251,9 @@
     // закрашивании не проблема, лишний раз залить чёрным те же пиксели безопасно).
     ranges.push(...findAddressLine(str));
 
-    ranges.sort((a, b) => a.start - b.start);
-    return ranges;
+    const finalRanges = subtractProtected(ranges, protectedRanges);
+    finalRanges.sort((a, b) => a.start - b.start);
+    return finalRanges;
   }
 
   window.PDN_DETECT_LINE = detectLine;
