@@ -133,6 +133,7 @@ function collectRedactionRects(lineItems, activeTypes) {
   const rects = [];
   for (const match of matches) {
     if (!activeTypes.has(match.type)) continue;
+    log(`    найдено [${match.type}]: "${str.slice(match.start, match.end)}"`);
     // Для каждого затронутого item находим МИНИМАЛЬНЫЙ и МАКСИМАЛЬНЫЙ локальный
     // индекс символа, попавшего в совпадение, и закрашиваем только этот диапазон
     // внутри item, а не весь item целиком.
@@ -313,6 +314,7 @@ function collectOcrRedactionRects(data, activeTypes) {
     const matches = window.PDN_DETECT_LINE(str);
     for (const match of matches) {
       if (!activeTypes.has(match.type)) continue;
+      log(`    найдено [${match.type}]: "${str.slice(match.start, match.end)}"`);
       const perWord = new Map();
       for (let c = match.start; c < match.end; c++) {
         const cm = charMap[c];
