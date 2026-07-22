@@ -50,6 +50,16 @@
   }
 
   function containsKeyword(lower, keyword) {
+    if (keyword === "г.") {
+      // "г.р." (год рождения) — не адрес, а отметка даты рождения. Простой
+      // includes() принял бы её за городское "г.", исключаем это сочетание отдельно.
+      let idx = 0;
+      while ((idx = lower.indexOf("г.", idx)) !== -1) {
+        if (lower.slice(idx, idx + 4) !== "г.р.") return true;
+        idx += 2;
+      }
+      return false;
+    }
     if (keyword.endsWith(".")) return lower.includes(keyword);
     let idx = 0;
     while ((idx = lower.indexOf(keyword, idx)) !== -1) {
@@ -67,6 +77,25 @@
     const hasKeyword = ADDRESS_KEYWORDS.some((k) => containsKeyword(lower, k));
     if (!hasKeyword) return [];
     return [{ start: 0, end: str.length, type: "адрес" }];
+  }
+
+  // Дата рождения — числовые (01.01.1990) и текстовые (1 января 1990 г.) форматы.
+  // Закрашиваем только если рядом есть слово-триггер ("дата рождения", "родился",
+  // "г.р." и т.п.) — иначе под закраску попадала бы вообще любая дата в документе
+  // (дата составления, срок, дедлайн и т.п.), не имеющая отношения к персональным
+  // данным. Ключевые слова здесь достаточно длинные и специфичные, поэтому ищем их
+  // простым includes() (как "паспорт"/"серия" выше) — в отличие от коротких слов
+  // адреса, случайно встретить "рожден"/"г.р." внутри не связанного слова маловероятно.
+  const BIRTH_KEYWORDS = ["дата рождения", "рожден", "рождён", "родил", "г.р."];
+  const MONTH_NAMES = "(?:январ[яь]|феврал[яь]|март[а]?|апрел[яь]|ма[яй]|июн[яь]|июл[яь]|август[а]?|сентябр[яь]|октябр[яь]|ноябр[яь]|декабр[яь])";
+  const DATE_NUMERIC_RE = /\b\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}\b/g;
+  const DATE_TEXT_RE = new RegExp(`\\b\\d{1,2}\\s+${MONTH_NAMES}\\s+\\d{4}\\s*(?:г\\.?|года)?`, "gi");
+
+  function findBirthDates(str, ranges) {
+    const lower = str.toLowerCase();
+    if (!BIRTH_KEYWORDS.some((k) => lower.includes(k))) return;
+    addMatches(ranges, DATE_NUMERIC_RE, str, "дата рождения");
+    addMatches(ranges, DATE_TEXT_RE, str, "дата рождения");
   }
 
   // Ссылки на статьи закона ("ст. 125 УПК РФ", "статья 158 ч. 2 УК РФ" и т.п.) —
@@ -249,6 +278,9 @@
     // Подписанные поля (ИНН:, СНИЛС, паспорт, телефон) — в первую очередь, чтобы
     // не зависеть от точного количества цифр в строгих регексах ниже.
     findLabeledDigitRuns(str, ranges);
+
+    // Дата рождения — только рядом со словом-триггером (см. комментарий у функции)
+    findBirthDates(str, ranges);
 
     // СНИЛС: 11 цифр в формате XXX-XXX-XXX XX (с пробелами/дефисами опционально)
     addMatches(ranges, /\b\d{3}[- ]?\d{3}[- ]?\d{3}[ ]?\d{2}\b/, str, "СНИЛС");
