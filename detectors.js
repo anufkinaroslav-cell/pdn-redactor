@@ -32,15 +32,39 @@
   const ADDRESS_KEYWORDS = [
     "г.", "город", "обл.", "область", "р-н", "район", "ул.", "улица",
     "пр-кт", "проспект", "пер.", "переулок", "д.", "дом", "кв.", "квартира",
-    "shosse", "шоссе", "наб.", "набережная"
+    "шоссе", "наб.", "набережная"
   ];
+
+  // Ключевые слова адреса без точки — это целые слова ("дом", "город" и т.п.),
+  // и искать их простым includes() опасно: например, "дом" — это ещё и
+  // подстрока слова "судом" ("рассмотрено судом" — про суд, не про адрес).
+  // Поэтому для них проверяем границы: слева и справа от найденного места не
+  // должно быть кириллической буквы (аналог \b, который для кириллицы в JS
+  // не работает). Сокращения с точкой ("г.", "д.", "ул." и т.п.) точку саму по
+  // себе достаточно надёжным разделителем, их по-прежнему ищем как подстроку.
+  function isWholeWordMatch(lower, keyword, idx) {
+    const before = idx > 0 ? lower[idx - 1] : "";
+    const after = idx + keyword.length < lower.length ? lower[idx + keyword.length] : "";
+    const cyrLetter = /[а-яё]/;
+    return !cyrLetter.test(before) && !cyrLetter.test(after);
+  }
+
+  function containsKeyword(lower, keyword) {
+    if (keyword.endsWith(".")) return lower.includes(keyword);
+    let idx = 0;
+    while ((idx = lower.indexOf(keyword, idx)) !== -1) {
+      if (isWholeWordMatch(lower, keyword, idx)) return true;
+      idx += keyword.length;
+    }
+    return false;
+  }
 
   function findAddressLine(str) {
     // Проверяем только явные ключевые слова адреса — отдельный 6-значный индекс
     // раньше тоже считался признаком адреса, но так под удар попадал любой
     // случайный 6-значный номер в документе (например, часть номера паспорта).
     const lower = str.toLowerCase();
-    const hasKeyword = ADDRESS_KEYWORDS.some((k) => lower.includes(k));
+    const hasKeyword = ADDRESS_KEYWORDS.some((k) => containsKeyword(lower, k));
     if (!hasKeyword) return [];
     return [{ start: 0, end: str.length, type: "адрес" }];
   }
