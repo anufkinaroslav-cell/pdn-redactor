@@ -126,10 +126,11 @@ function buildLineString(lineItems) {
   return { str, charMap };
 }
 
-function collectRedactionRects(lineItems, activeTypes) {
+function collectRedactionRects(lineItems, activeTypes, prevLineWasAddress) {
   // itemRect/itemCharWidth для каждого элемента уже вычислены в buildLines().
   const { str, charMap } = buildLineString(lineItems);
-  const matches = window.PDN_DETECT_LINE(str);
+  const matches = window.PDN_DETECT_LINE(str, prevLineWasAddress);
+  const hasAddress = matches.some((m) => m.type === "адрес");
   const rects = [];
   for (const match of matches) {
     if (!activeTypes.has(match.type)) continue;
@@ -163,7 +164,7 @@ function collectRedactionRects(lineItems, activeTypes) {
     }
     rects.push(rect);
   }
-  return rects;
+  return { rects, hasAddress };
 }
 
 // ---- Распознавание сканов (OCR) ----
@@ -308,10 +309,12 @@ function ocrPartialRect(word, min, max) {
 function collectOcrRedactionRects(data, activeTypes) {
   const rects = [];
   const lines = groupOcrWordsIntoLines(extractAllOcrWords(data));
+  let prevLineWasAddress = false;
   for (const words of lines) {
     if (words.length === 0) continue;
     const { str, charMap } = buildOcrLineString(words);
-    const matches = window.PDN_DETECT_LINE(str);
+    const matches = window.PDN_DETECT_LINE(str, prevLineWasAddress);
+    prevLineWasAddress = matches.some((m) => m.type === "адрес");
     for (const match of matches) {
       if (!activeTypes.has(match.type)) continue;
       log(`    найдено [${match.type}]: "${str.slice(match.start, match.end)}"`);
@@ -359,8 +362,11 @@ async function redactPdf(file, activeTypes) {
     if (hasSelectableText(textContent)) {
       const lines = buildLines(textContent.items);
       redactionRects = [];
+      let prevLineWasAddress = false;
       for (const lineItems of lines) {
-        redactionRects.push(...collectRedactionRects(lineItems, activeTypes));
+        const { rects, hasAddress } = collectRedactionRects(lineItems, activeTypes, prevLineWasAddress);
+        redactionRects.push(...rects);
+        prevLineWasAddress = hasAddress;
       }
 
       ctx.fillStyle = "#000000";
