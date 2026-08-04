@@ -57,14 +57,24 @@
   function containsKeyword(lower, keyword) {
     let idx = 0;
     while ((idx = lower.indexOf(keyword, idx)) !== -1) {
-      if (isWholeWordMatch(lower, keyword, idx)) {
-        // "г.р." (год рождения) — не адрес, а отметка даты рождения; исключаем
-        // это сочетание отдельно, иначе оно засчиталось бы за городское "г.".
-        if (!(keyword === "г." && lower.slice(idx, idx + 4) === "г.р.")) return true;
+      if (isWholeWordMatch(lower, keyword, idx) && keyword === "г." && isYearAbbreviation(lower, idx)) {
+        idx += keyword.length;
+        continue;
       }
+      if (isWholeWordMatch(lower, keyword, idx)) return true;
       idx += keyword.length;
     }
     return false;
+  }
+
+  // "г." после даты/года — это сокращение "года" ("2025 г.", "04.08.2025 г."),
+  // а не города, хотя выглядит совершенно так же. Отдельно сюда же попадает
+  // "г.р." (год рождения) — оно и так начинается с цифры перед этим не стоит,
+  // но означает то же самое "год", а не "город".
+  function isYearAbbreviation(lower, idx) {
+    if (lower.slice(idx, idx + 4) === "г.р.") return true;
+    const before = lower.slice(Math.max(0, idx - 6), idx);
+    return /\d\s*$/.test(before);
   }
 
   function findAddressLine(str) {
