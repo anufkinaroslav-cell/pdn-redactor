@@ -38,32 +38,30 @@
   // Ключевые слова адреса без точки — это целые слова ("дом", "город" и т.п.),
   // и искать их простым includes() опасно: например, "дом" — это ещё и
   // подстрока слова "судом" ("рассмотрено судом" — про суд, не про адрес).
-  // Поэтому для них проверяем границы: слева и справа от найденного места не
-  // должно быть кириллической буквы (аналог \b, который для кириллицы в JS
-  // не работает). Сокращения с точкой ("г.", "д.", "ул." и т.п.) точку саму по
-  // себе достаточно надёжным разделителем, их по-прежнему ищем как подстроку.
+  // Сокращения с точкой ("г.", "д.", "ул." и т.п.) страдают ОБРАТНОЙ версией той
+  // же проблемы: точка сама по себе не спасает, потому что это ещё и обычная
+  // точка конца предложения после слова, оканчивающегося на ту же букву —
+  // например, "период." выглядит как "д." (сокращение "дом"), хотя это конец
+  // фразы, никакого дома тут нет. Поэтому для ЛЮБого ключевого слова проверяем,
+  // что слева нет кириллической буквы (аналог \b, который для кириллицы в JS не
+  // работает); для слов без точки — дополнительно и справа.
   function isWholeWordMatch(lower, keyword, idx) {
     const before = idx > 0 ? lower[idx - 1] : "";
-    const after = idx + keyword.length < lower.length ? lower[idx + keyword.length] : "";
     const cyrLetter = /[а-яё]/;
-    return !cyrLetter.test(before) && !cyrLetter.test(after);
+    if (cyrLetter.test(before)) return false;
+    if (keyword.endsWith(".")) return true;
+    const after = idx + keyword.length < lower.length ? lower[idx + keyword.length] : "";
+    return !cyrLetter.test(after);
   }
 
   function containsKeyword(lower, keyword) {
-    if (keyword === "г.") {
-      // "г.р." (год рождения) — не адрес, а отметка даты рождения. Простой
-      // includes() принял бы её за городское "г.", исключаем это сочетание отдельно.
-      let idx = 0;
-      while ((idx = lower.indexOf("г.", idx)) !== -1) {
-        if (lower.slice(idx, idx + 4) !== "г.р.") return true;
-        idx += 2;
-      }
-      return false;
-    }
-    if (keyword.endsWith(".")) return lower.includes(keyword);
     let idx = 0;
     while ((idx = lower.indexOf(keyword, idx)) !== -1) {
-      if (isWholeWordMatch(lower, keyword, idx)) return true;
+      if (isWholeWordMatch(lower, keyword, idx)) {
+        // "г.р." (год рождения) — не адрес, а отметка даты рождения; исключаем
+        // это сочетание отдельно, иначе оно засчиталось бы за городское "г.".
+        if (!(keyword === "г." && lower.slice(idx, idx + 4) === "г.р.")) return true;
+      }
       idx += keyword.length;
     }
     return false;
