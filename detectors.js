@@ -54,27 +54,32 @@
     return !cyrLetter.test(after);
   }
 
-  function containsKeyword(lower, keyword) {
+  function containsKeyword(str, lower, keyword) {
     let idx = 0;
     while ((idx = lower.indexOf(keyword, idx)) !== -1) {
-      if (isWholeWordMatch(lower, keyword, idx) && keyword === "г." && isYearAbbreviation(lower, idx)) {
-        idx += keyword.length;
-        continue;
+      if (isWholeWordMatch(lower, keyword, idx)) {
+        if (!(keyword === "г." && isYearAbbreviation(str, lower, idx))) return true;
       }
-      if (isWholeWordMatch(lower, keyword, idx)) return true;
       idx += keyword.length;
     }
     return false;
   }
 
   // "г." после даты/года — это сокращение "года" ("2025 г.", "04.08.2025 г."),
-  // а не города, хотя выглядит совершенно так же. Отдельно сюда же попадает
-  // "г.р." (год рождения) — оно и так начинается с цифры перед этим не стоит,
-  // но означает то же самое "год", а не "город".
-  function isYearAbbreviation(lower, idx) {
+  // а не города, хотя выглядит совершенно так же. Сюда же "г.р." (год рождения).
+  // Отдельный случай — перенос строки: если в оригинале было "...от 13.03.2025 г.,
+  // № 222..." и разбиение на строки/OCR разорвало текст ровно после "г.", то в
+  // строке, где обрабатывается остаток, "г." окажется САМЫМ ПЕРВЫМ, без цифры перед
+  // собой (она осталась в предыдущей строке) — предыдущая проверка это не ловит.
+  // Поэтому дополнительно требуем, чтобы после настоящего городского "г." шло
+  // название города (слово с большой буквы) — а не запятая/точка с запятой/цифра,
+  // как бывает у оборванного "г." от "года".
+  function isYearAbbreviation(str, lower, idx) {
     if (lower.slice(idx, idx + 4) === "г.р.") return true;
     const before = lower.slice(Math.max(0, idx - 6), idx);
-    return /\d\s*$/.test(before);
+    if (/\d\s*$/.test(before)) return true;
+    const after = str.slice(idx + 2).replace(/^[\s,;]+/, "");
+    return !/^[А-ЯЁ]/.test(after);
   }
 
   function findAddressLine(str) {
@@ -82,7 +87,7 @@
     // раньше тоже считался признаком адреса, но так под удар попадал любой
     // случайный 6-значный номер в документе (например, часть номера паспорта).
     const lower = str.toLowerCase();
-    const hasKeyword = ADDRESS_KEYWORDS.some((k) => containsKeyword(lower, k));
+    const hasKeyword = ADDRESS_KEYWORDS.some((k) => containsKeyword(str, lower, k));
     if (!hasKeyword) return [];
     return [{ start: 0, end: str.length, type: "адрес" }];
   }
