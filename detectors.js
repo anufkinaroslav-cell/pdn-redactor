@@ -200,7 +200,11 @@
   // словом "паспорт"/"серия" где-то в той же строке — иначе, например, "дело
   // № 125" или "ст. 125 УПК РФ" ошибочно закрашивались бы как паспорт.
   const LABELS = [
-    { re: /инн/gi, type: "ИНН" },
+    // ИНН из 10 цифр — это всегда ИНН ОРГАНИЗАЦИИ (у физлиц ИНН из 12 цифр),
+    // то есть не персональные данные — исключаем эту длину, даже если она
+    // явно подписана словом "ИНН" (в справках банков и т.п. рядом со словом
+    // "ИНН" почти всегда указан именно ИНН самой организации, не человека).
+    { re: /инн/gi, type: "ИНН", excludeDigitCounts: [10] },
     { re: /снилс/gi, type: "СНИЛС" },
     { re: /огрнип|огрн/gi, type: "ОГРН" },
     { re: /паспорт|серия/gi, type: "паспорт" },
@@ -210,7 +214,7 @@
 
   function findLabeledDigitRuns(str, ranges) {
     const lower = str.toLowerCase();
-    for (const { re, type, contextWords } of LABELS) {
+    for (const { re, type, contextWords, excludeDigitCounts } of LABELS) {
       if (contextWords && !contextWords.some((w) => lower.includes(w))) continue;
       let labelMatch;
       re.lastIndex = 0;
@@ -219,6 +223,8 @@
         const windowStr = str.slice(searchFrom, Math.min(str.length, searchFrom + 40));
         const digitRun = /\d[\d \-]{2,}\d|\d{3,}/.exec(windowStr);
         if (!digitRun) continue;
+        const digitCount = (digitRun[0].match(/\d/g) || []).length;
+        if (excludeDigitCounts && excludeDigitCounts.includes(digitCount)) continue;
         const start = searchFrom + digitRun.index;
         const end = start + digitRun[0].length;
         if (!overlaps(ranges, start, end)) ranges.push({ start, end, type });
@@ -239,9 +245,12 @@
     const w = word.toLowerCase();
     if (FIRST_NAMES.has(w)) return true;
     // Учитываем падежные окончания русских имён (Валерий -> Валерию/Валерия/Валерием):
-    // сравниваем по "стеблю" имени без последних 1-2 букв.
+    // сравниваем по "стеблю" имени без последних 1-2 букв. Порог ">6" (а не ">4",
+    // как было раньше) — для имён длиной 5-6 букв отрезаем только 1 букву, а не 2:
+    // иначе стебель получается слишком коротким и общим и совпадает со случайными
+    // словами (например, "фили" от "Филипп" совпадало со словом "Филиал").
     for (const name of FIRST_NAMES) {
-      const stem = name.length > 4 ? name.slice(0, -2) : name.slice(0, -1);
+      const stem = name.length > 6 ? name.slice(0, -2) : name.slice(0, -1);
       if (stem.length >= 3 && w.startsWith(stem) && Math.abs(w.length - name.length) <= 2) {
         return true;
       }
@@ -339,9 +348,10 @@
     // Телефон
     addMatches(ranges, /(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}\b/, str, "телефон");
 
-    // ИНН: 10 или 12 цифр
+    // ИНН: только 12 цифр — у физлиц ИНН именно такой длины. 10-значный ИНН
+    // всегда принадлежит организации (не персональные данные), поэтому его
+    // не закрашиваем безусловно (см. также excludeDigitCounts у метки "ИНН" выше).
     addMatches(ranges, /\b\d{12}\b/, str, "ИНН");
-    addMatches(ranges, /\b\d{10}\b/, str, "ИНН");
 
     // ОГРН (13 цифр) / ОГРНИП (15 цифр) — регистрационный номер ИП относится к
     // конкретному физлицу, поэтому тоже считаем персональными данными.
