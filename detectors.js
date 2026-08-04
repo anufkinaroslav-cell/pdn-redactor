@@ -32,7 +32,7 @@
   const ADDRESS_KEYWORDS = [
     "г.", "город", "обл.", "область", "р-н", "район", "ул.", "улица",
     "пр-кт", "проспект", "пер.", "переулок", "д.", "дом", "кв.", "квартира",
-    "шоссе", "наб.", "набережная"
+    "шоссе", "наб.", "набережная", "н.п.", "тер.", "участок", "участки"
   ];
 
   // Ключевые слова адреса без точки — это целые слова ("дом", "город" и т.п.),
@@ -54,15 +54,16 @@
     return !cyrLetter.test(after);
   }
 
-  function containsKeyword(str, lower, keyword) {
+  // Возвращает индекс первого настоящего совпадения ключевого слова, либо -1.
+  function findKeywordIndex(str, lower, keyword) {
     let idx = 0;
     while ((idx = lower.indexOf(keyword, idx)) !== -1) {
       if (isWholeWordMatch(lower, keyword, idx)) {
-        if (!(keyword === "г." && isYearAbbreviation(str, lower, idx))) return true;
+        if (!(keyword === "г." && isYearAbbreviation(str, lower, idx))) return idx;
       }
       idx += keyword.length;
     }
-    return false;
+    return -1;
   }
 
   // "г." после даты/года — это сокращение "года" ("2025 г.", "04.08.2025 г."),
@@ -83,13 +84,27 @@
   }
 
   function findAddressLine(str) {
-    // Проверяем только явные ключевые слова адреса — отдельный 6-значный индекс
-    // раньше тоже считался признаком адреса, но так под удар попадал любой
-    // случайный 6-значный номер в документе (например, часть номера паспорта).
+    // Проверяем явные ключевые слова адреса — отдельный 6-значный индекс сам по
+    // себе не считается признаком адреса (иначе под удар попадал бы любой
+    // случайный 6-значный номер в документе, например часть номера паспорта).
     const lower = str.toLowerCase();
-    const hasKeyword = ADDRESS_KEYWORDS.some((k) => containsKeyword(str, lower, k));
-    if (!hasKeyword) return [];
-    return [{ start: 0, end: str.length, type: "адрес" }];
+    const keywordIndices = ADDRESS_KEYWORDS
+      .map((k) => findKeywordIndex(str, lower, k))
+      .filter((i) => i !== -1);
+    if (keywordIndices.length === 0) return [];
+    const boundary = Math.min(...keywordIndices);
+
+    // Начало закраски сужаем ДО САМОГО АДРЕСА только если перед ним есть явный
+    // разделитель — двоеточие ("Место оказания услуг: 123456, обл. ..." → всё
+    // до двоеточия не адрес и не персональные данные). Без двоеточия начало НЕ
+    // сужаем и берём всю строку с начала — название района/местности может
+    // стоять раньше первого найденного слова в той же строке ("Приморский,
+    // н.п. Заречное..." — "Приморский" относится к адресу, хотя "н.п."
+    // находится только дальше), и его нельзя терять.
+    const lastColon = str.lastIndexOf(":", boundary);
+    const start = lastColon !== -1 ? lastColon + 1 : 0;
+
+    return [{ start, end: str.length, type: "адрес" }];
   }
 
   // Дата рождения — числовые (01.01.1990) и текстовые (1 января 1990 г.) форматы.
