@@ -226,7 +226,10 @@
     // "ИНН" почти всегда указан именно ИНН самой организации, не человека).
     { re: /инн/gi, type: "ИНН", excludeDigitCounts: [10] },
     { re: /снилс/gi, type: "СНИЛС" },
-    { re: /огрнип|огрн/gi, type: "ОГРН" },
+    // ОГРН/ОГРНИП — 13/15 цифр. minDigits защищает от случайных коротких чисел
+    // рядом со словом "ОГРН" (например, года "2024"), которые не могут быть
+    // настоящим ОГРН, но раньше подходили под общий "ряд из 3+ цифр".
+    { re: /огрнип|огрн/gi, type: "ОГРН", minDigits: 12 },
     { re: /паспорт|серия/gi, type: "паспорт" },
     { re: /номер|№/gi, type: "паспорт", contextWords: ["паспорт", "серия"] },
     { re: /телефон|тел\.|моб\./gi, type: "телефон" },
@@ -234,7 +237,7 @@
 
   function findLabeledDigitRuns(str, ranges) {
     const lower = str.toLowerCase();
-    for (const { re, type, contextWords, excludeDigitCounts } of LABELS) {
+    for (const { re, type, contextWords, excludeDigitCounts, minDigits } of LABELS) {
       if (contextWords && !contextWords.some((w) => lower.includes(w))) continue;
       let labelMatch;
       re.lastIndex = 0;
@@ -245,6 +248,7 @@
         if (!digitRun) continue;
         const digitCount = (digitRun[0].match(/\d/g) || []).length;
         if (excludeDigitCounts && excludeDigitCounts.includes(digitCount)) continue;
+        if (minDigits && digitCount < minDigits) continue;
         const start = searchFrom + digitRun.index;
         const end = start + digitRun[0].length;
         if (!overlaps(ranges, start, end)) ranges.push({ start, end, type });
